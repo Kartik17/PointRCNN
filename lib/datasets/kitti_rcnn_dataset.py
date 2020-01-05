@@ -10,12 +10,12 @@ from lib.config import cfg
 
 
 class KittiRCNNDataset(KittiDataset):
-    def __init__(self, root_dir, npoints=16384, split='train', classes='Car', mode='TRAIN', random_select=True,
+    def __init__(self, root_dir, npoints=65536, split='train', classes='VEHICLE', mode='TRAIN', random_select=True,
                  logger=None, rcnn_training_roi_dir=None, rcnn_training_feature_dir=None, rcnn_eval_roi_dir=None,
                  rcnn_eval_feature_dir=None, gt_database_dir=None):
         super().__init__(root_dir=root_dir, split=split)
-        if classes == 'Car':
-            self.classes = ('Background', 'Car')
+        if classes == 'VEHICLE':
+            self.classes = ('Background', 'VEHICLE')
             aug_scene_root_dir = os.path.join(root_dir, 'KITTI', 'aug_scene')
         elif classes == 'People':
             self.classes = ('Background', 'Pedestrian', 'Cyclist')
@@ -102,7 +102,7 @@ class KittiRCNNDataset(KittiDataset):
         Discard samples which don't have current classes, which will not be used for training.
         Valid sample_id is stored in self.sample_id_list
         """
-        self.logger.info('Loading %s samples from %s ...' % (self.mode, self.label_dir))
+        #self.logger.info('Loading %s samples from %s ...' % (self.mode, self.label_dir))
         for idx in range(0, self.num_sample):
             sample_id = int(self.image_idx_list[idx])
             obj_list = self.filtrate_objects(self.get_label(sample_id))
@@ -111,26 +111,21 @@ class KittiRCNNDataset(KittiDataset):
                 continue
             self.sample_id_list.append(sample_id)
 
-        self.logger.info('Done: filter %s results: %d / %d\n' % (self.mode, len(self.sample_id_list),
-                                                                 len(self.image_idx_list)))
+        #self.logger.info('Done: filter %s results: %d / %d\n' % (self.mode, len(self.sample_id_list),
+                                                                 #len(self.image_idx_list)))
 
     def get_label(self, idx):
-        if idx < 10000:
-            label_file = os.path.join(self.label_dir, '%06d.txt' % idx)
-        else:
-            label_file = os.path.join(self.aug_label_dir, '%06d.txt' % idx)
-
-        assert os.path.exists(label_file)
-        return kitti_utils.get_objects_from_label(label_file)
+        assert os.path.exists(self.label_pathlist[idx])
+        return kitti_utils.get_objects_from_label(self.label_pathlist[idx])
 
     def get_image(self, idx):
-        return super().get_image(idx % 10000)
+        return super().get_image(idx)
 
     def get_image_shape(self, idx):
         return super().get_image_shape(idx % 10000)
 
     def get_calib(self, idx):
-        return super().get_calib(idx % 10000)
+        return super().get_calib(idx)
 
     def get_road_plane(self, idx):
         return super().get_road_plane(idx % 10000)
@@ -158,7 +153,7 @@ class KittiRCNNDataset(KittiDataset):
         type_whitelist = self.classes
         if self.mode == 'TRAIN' and cfg.INCLUDE_SIMILAR_TYPE:
             type_whitelist = list(self.classes)
-            if 'Car' in self.classes:
+            if 'VEHICLE' in self.classes:
                 type_whitelist.append('Van')
             if 'Pedestrian' in self.classes:  # or 'Cyclist' in self.classes:
                 type_whitelist.append('Person_sitting')
@@ -245,31 +240,11 @@ class KittiRCNNDataset(KittiDataset):
 
     def get_rpn_sample(self, index):
         sample_id = int(self.sample_id_list[index])
-        if sample_id < 10000:
-            calib = self.get_calib(sample_id)
-            # img = self.get_image(sample_id)
-            img_shape = self.get_image_shape(sample_id)
-            pts_lidar = self.get_lidar(sample_id)
-
-            # get valid point (projected points should be in image)
-            pts_rect = calib.lidar_to_rect(pts_lidar[:, 0:3])
-            pts_intensity = pts_lidar[:, 3]
-        else:
-            calib = self.get_calib(sample_id % 10000)
-            # img = self.get_image(sample_id % 10000)
-            img_shape = self.get_image_shape(sample_id % 10000)
-
-            pts_file = os.path.join(self.aug_pts_dir, '%06d.bin' % sample_id)
-            assert os.path.exists(pts_file), '%s' % pts_file
-            aug_pts = np.fromfile(pts_file, dtype=np.float32).reshape(-1, 4)
-            pts_rect, pts_intensity = aug_pts[:, 0:3], aug_pts[:, 3]
-
-        pts_img, pts_rect_depth = calib.rect_to_img(pts_rect)
-        pts_valid_flag = self.get_valid_flag(pts_rect, pts_img, pts_rect_depth, img_shape)
-
-        pts_rect = pts_rect[pts_valid_flag][:, 0:3]
-        pts_intensity = pts_intensity[pts_valid_flag]
-
+        pts_lidar = self.get_lidar(sample_id)
+        # get valid point (projected points should be in image)
+        pts_rect = pts_lidar[:, 0:3]
+        pts_intensity = np.arange(pts_lidar.shape[0])
+        
         if cfg.GT_AUG_ENABLED and self.mode == 'TRAIN':
             # all labels for checking overlapping
             all_gt_obj_list = self.filtrate_dc_objects(self.get_label(sample_id))
@@ -285,10 +260,10 @@ class KittiRCNNDataset(KittiDataset):
         if self.mode == 'TRAIN' or self.random_select:
             if self.npoints < len(pts_rect):
                 pts_depth = pts_rect[:, 2]
-                pts_near_flag = pts_depth < 40.0
+                pts_near_flag = np.abs(pts_depth) < 40.0
                 far_idxs_choice = np.where(pts_near_flag == 0)[0]
                 near_idxs = np.where(pts_near_flag == 1)[0]
-                near_idxs_choice = np.random.choice(near_idxs, self.npoints - len(far_idxs_choice), replace=False)
+                near_idxs_choice = np.random.choice(near_idxs, self.npoints - len(far_idxs_choice), replace=True)
 
                 choice = np.concatenate((near_idxs_choice, far_idxs_choice), axis=0) \
                     if len(far_idxs_choice) > 0 else near_idxs_choice
@@ -296,7 +271,7 @@ class KittiRCNNDataset(KittiDataset):
             else:
                 choice = np.arange(0, len(pts_rect), dtype=np.int32)
                 if self.npoints > len(pts_rect):
-                    extra_choice = np.random.choice(choice, self.npoints - len(pts_rect), replace=False)
+                    extra_choice = np.random.choice(choice, self.npoints - len(pts_rect), replace=True)
                     choice = np.concatenate((choice, extra_choice), axis=0)
                 np.random.shuffle(choice)
 
@@ -312,10 +287,10 @@ class KittiRCNNDataset(KittiDataset):
         sample_info = {'sample_id': sample_id, 'random_select': self.random_select}
 
         if self.mode == 'TEST':
-            if cfg.RPN.USE_INTENSITY:
-                pts_input = np.concatenate((ret_pts_rect, ret_pts_features), axis=1)  # (N, C)
-            else:
-                pts_input = ret_pts_rect
+            #if cfg.RPN.USE_INTENSITY:
+                #pts_input = np.concatenate((ret_pts_rect, ret_pts_features), axis=1)  # (N, C)
+            #else:
+            pts_input = ret_pts_rect
             sample_info['pts_input'] = pts_input
             sample_info['pts_rect'] = ret_pts_rect
             sample_info['pts_features'] = ret_pts_features
@@ -339,10 +314,10 @@ class KittiRCNNDataset(KittiDataset):
             sample_info['aug_method'] = aug_method
 
         # prepare input
-        if cfg.RPN.USE_INTENSITY:
-            pts_input = np.concatenate((aug_pts_rect, ret_pts_features), axis=1)  # (N, C)
-        else:
-            pts_input = aug_pts_rect
+        #if cfg.RPN.USE_INTENSITY:
+            #pts_input = np.concatenate((aug_pts_rect, ret_pts_features), axis=1)  # (N, C)
+        #else:
+        pts_input = aug_pts_rect
 
         if cfg.RPN.FIXED:
             sample_info['pts_input'] = pts_input

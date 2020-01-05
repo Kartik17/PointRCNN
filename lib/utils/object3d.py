@@ -1,8 +1,8 @@
 import numpy as np
-
+from scipy.spatial.transform import Rotation
 
 def cls_type_to_id(cls_type):
-    type_to_id = {'Car': 1, 'Pedestrian': 2, 'Cyclist': 3, 'Van': 4}
+    type_to_id = {'VEHICLE': 1, 'Pedestrian': 2, 'Cyclist': 3, 'Van': 4}
     if cls_type not in type_to_id.keys():
         return -1
     return type_to_id[cls_type]
@@ -10,40 +10,55 @@ def cls_type_to_id(cls_type):
 
 class Object3d(object):
     def __init__(self, line):
-        label = line.strip().split(' ')
+        self.argo_to_kitti = np.array([[6.927964e-03, -9.999722e-01, -2.757829e-03],
+                                       [-1.162982e-03, 2.749836e-03, -9.999955e-01],
+                                       [9.999753e-01, 6.931141e-03, -1.143899e-03]])
+        
+        label = line
         self.src = line
-        self.cls_type = label[0]
+        self.cls_type = label['label_class']
         self.cls_id = cls_type_to_id(self.cls_type)
-        self.trucation = float(label[1])
-        self.occlusion = float(label[2])  # 0:fully visible 1:partly occluded 2:largely occluded 3:unknown
-        self.alpha = float(label[3])
-        self.box2d = np.array((float(label[4]), float(label[5]), float(label[6]), float(label[7])), dtype=np.float32)
-        self.h = float(label[8])
-        self.w = float(label[9])
-        self.l = float(label[10])
-        self.pos = np.array((float(label[11]), float(label[12]), float(label[13])), dtype=np.float32)
-        self.dis_to_cam = np.linalg.norm(self.pos)
-        self.ry = float(label[14])
-        self.score = float(label[15]) if label.__len__() == 16 else -1.0
+        
+        self.trucation = 0.0
+        self.occlusion = 0.0  
+        self.alpha = np.arctan2(label['center']['z'],label['center']['x'])
+        
+        self.h = float(label['height'])
+        self.w = float(label['width'])
+        self.l = float(label['length'])
+        self.pos_argo = np.array([float(label['center']['x']), float(label['center']['y']), float(label['center']['z'])], dtype=np.float32)
+        
+        #KITTI Frame
+        self.pos = np.dot(self.argo_to_kitti,self.pos_argo)
+        w,x,y,z = label['rotation']['w'],label['rotation']['x'],label['rotation']['y'],label['rotation']['z']
+        self.q = np.array([x, y, z, w])       
+        self.rot_mat_argo = Rotation.from_quat(self.q).as_dcm()
+        
+        
+        self.ry = -Rotation.from_quat(self.q).as_euler('xyz')[-1] + np.pi/2.
+        self.score = -1.0
         self.level_str = None
         self.level = self.get_obj_level()
 
     def get_obj_level(self):
-        height = float(self.box2d[3]) - float(self.box2d[1]) + 1
+        # Orginal : Assign level based on height of bounidng box in image, truncation, and occulusion value
+        
+        # Modified: Assign level based on distance from Origin of Lidar. Done
+        distance = np.linalg.norm(self.pos)
 
-        if height >= 40 and self.trucation <= 0.15 and self.occlusion <= 0:
+        if distance <= 30.0:
             self.level_str = 'Easy'
             return 1  # Easy
-        elif height >= 25 and self.trucation <= 0.3 and self.occlusion <= 1:
+        elif distance > 30.0 and distance <= 60.0:
             self.level_str = 'Moderate'
             return 2  # Moderate
-        elif height >= 25 and self.trucation <= 0.5 and self.occlusion <= 2:
+        elif distance > 60 :
             self.level_str = 'Hard'
             return 3  # Hard
         else:
             self.level_str = 'UnKnown'
             return 4
-
+        
     def generate_corners3d(self):
         """
         generate corners3d representation for this object
@@ -51,7 +66,7 @@ class Object3d(object):
         """
         l, h, w = self.l, self.h, self.w
         x_corners = [l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2]
-        y_corners = [0, 0, 0, 0, -h, -h, -h, -h]
+        y_corners = [h/2., h/2., h/2., h/2., -h/2., -h/2., -h/2., -h/2.]
         z_corners = [w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2]
 
         R = np.array([[np.cos(self.ry), 0, np.sin(self.ry)],

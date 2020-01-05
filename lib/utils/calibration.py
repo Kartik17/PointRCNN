@@ -1,22 +1,18 @@
 import numpy as np
 import os
-
+import json
 
 def get_calib_from_file(calib_file):
     with open(calib_file) as f:
-        lines = f.readlines()
+        calib_data = json.load(f)
+    
+    P2 = np.array([[calib_data['camera_data_'][5]['value']['focal_length_x_px_'],0.0,calib_data['camera_data_'][5]['value'] ['focal_center_x_px_'],0.0],[0.0,calib_data['camera_data_'][5]['value']['focal_length_y_px_'],calib_data['camera_data_'][5]['value']['focal_center_y_px_'],0.0],[0.0,0.0,1.0,0.0]])
 
-    obj = lines[2].strip().split(' ')[1:]
-    P2 = np.array(obj, dtype=np.float32)
-    obj = lines[3].strip().split(' ')[1:]
-    P3 = np.array(obj, dtype=np.float32)
-    obj = lines[4].strip().split(' ')[1:]
-    R0 = np.array(obj, dtype=np.float32)
-    obj = lines[5].strip().split(' ')[1:]
-    Tr_velo_to_cam = np.array(obj, dtype=np.float32)
+    R0 = np.eye(3)
+    Tr_velo_to_cam = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,0]])
 
     return {'P2': P2.reshape(3, 4),
-            'P3': P3.reshape(3, 4),
+            'P3': None,
             'R0': R0.reshape(3, 3),
             'Tr_velo2cam': Tr_velo_to_cam.reshape(3, 4)}
 

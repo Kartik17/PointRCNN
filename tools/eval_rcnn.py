@@ -335,6 +335,7 @@ def eval_one_epoch_rcnn(model, dataloader, epoch_id, result_dir, logger):
 
             # calculate recall
             gt_num = gt_boxes3d.shape[0]
+            
             if gt_num > 0:
                 iou3d = iou3d_utils.boxes_iou3d_gpu(pred_boxes3d, gt_boxes3d)
                 gt_max_iou, _ = iou3d.max(dim=0)
@@ -356,7 +357,7 @@ def eval_one_epoch_rcnn(model, dataloader, epoch_id, result_dir, logger):
             cls_valid_mask = ((gt_iou >= cfg.RCNN.CLS_FG_THRESH) | (gt_iou <= cfg.RCNN.CLS_BG_THRESH)).float()
             cls_acc = ((pred_classes == cls_label.long()).float() * cls_valid_mask).sum() / max(cls_valid_mask.sum(), 1.0)
 
-            iou_thresh = 0.7 if cfg.CLASSES == 'Car' else 0.5
+            iou_thresh = 0.7 if cfg.CLASSES == 'VEHICLE' else 0.5
             cls_label_refined = (gt_iou >= iou_thresh).float()
             cls_acc_refined = (pred_classes == cls_label_refined.long()).float().sum() / max(cls_label_refined.shape[0], 1.0)
 
@@ -404,6 +405,7 @@ def eval_one_epoch_rcnn(model, dataloader, epoch_id, result_dir, logger):
     progress_bar.close()
 
     # dump empty files
+    '''
     split_file = os.path.join(dataset.imageset_dir, '..', '..', 'ImageSets', dataset.split + '.txt')
     split_file = os.path.abspath(split_file)
     image_idx_list = [x.strip() for x in open(split_file).readlines()]
@@ -417,7 +419,9 @@ def eval_one_epoch_rcnn(model, dataloader, epoch_id, result_dir, logger):
             logger.info('empty_cnt=%d: dump empty file %s' % (empty_cnt, cur_file))
 
     ret_dict = {'empty_cnt': empty_cnt}
-
+    '''
+    rect_dict = {}
+    
     logger.info('-------------------performance of epoch %s---------------------' % epoch_id)
     logger.info(str(datetime.now()))
 
@@ -445,7 +449,7 @@ def eval_one_epoch_rcnn(model, dataloader, epoch_id, result_dir, logger):
 
     if cfg.TEST.SPLIT != 'test':
         logger.info('Averate Precision:')
-        name_to_class = {'Car': 0, 'Pedestrian': 1, 'Cyclist': 2}
+        name_to_class = {'VEHICLE': 0, 'Pedestrian': 1, 'Cyclist': 2}
         ap_result_str, ap_dict = kitti_evaluate(dataset.label_dir, final_output_dir, label_split_file=split_file,
                                                 current_class=name_to_class[cfg.CLASSES])
         logger.info(ap_result_str)
@@ -535,7 +539,7 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
                 rpn_cls_label = torch.from_numpy(rpn_cls_label).cuda(non_blocking=True).long()
 
             gt_boxes3d = data['gt_boxes3d']
-
+            gt_boxes3d = filtrate_gtboxes(gt_boxes3d)
             for k in range(batch_size):
                 # calculate recall
                 cur_gt_boxes3d = gt_boxes3d[k]
@@ -629,6 +633,7 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
 
     progress_bar.close()
     # dump empty files
+    '''
     split_file = os.path.join(dataset.imageset_dir, '..', '..', 'ImageSets', dataset.split + '.txt')
     split_file = os.path.abspath(split_file)
     image_idx_list = [x.strip() for x in open(split_file).readlines()]
@@ -640,9 +645,10 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
                 pass
             empty_cnt += 1
             logger.info('empty_cnt=%d: dump empty file %s' % (empty_cnt, cur_file))
-
+    
     ret_dict = {'empty_cnt': empty_cnt}
-
+    '''
+    ret_dict = {}
     logger.info('-------------------performance of epoch %s---------------------' % epoch_id)
     logger.info(str(datetime.now()))
 
@@ -670,15 +676,16 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
         logger.info('total bbox recall(thresh=%.3f): %d / %d = %f' % (thresh, total_recalled_bbox_list[idx],
                                                                       total_gt_bbox, cur_recall))
         ret_dict['rcnn_recall(thresh=%.2f)' % thresh] = cur_recall
-
+    
+    '''
     if cfg.TEST.SPLIT != 'test':
         logger.info('Averate Precision:')
-        name_to_class = {'Car': 0, 'Pedestrian': 1, 'Cyclist': 2}
+        name_to_class = {'VEHICLE': 0, 'Pedestrian': 1, 'Cyclist': 2}
         ap_result_str, ap_dict = kitti_evaluate(dataset.label_dir, final_output_dir, label_split_file=split_file,
                                                 current_class=name_to_class[cfg.CLASSES])
         logger.info(ap_result_str)
         ret_dict.update(ap_dict)
-
+    '''
     logger.info('result is saved to: %s' % result_dir)
     return ret_dict
 
@@ -843,8 +850,9 @@ def repeat_eval_ckpt(root_result_dir, ckpt_dir):
 
 def create_dataloader(logger):
     mode = 'TEST' if args.test else 'EVAL'
-    DATA_PATH = os.path.join('..', 'data')
-
+    #DATA_PATH = os.path.join('..', 'data')
+    DATA_PATH = '/data/Argoverse/argoverse-tracking'
+    
     # create dataloader
     test_set = KittiRCNNDataset(root_dir=DATA_PATH, npoints=cfg.RPN.NUM_POINTS, split=cfg.TEST.SPLIT, mode=mode,
                                 random_select=args.random_select,
@@ -858,6 +866,36 @@ def create_dataloader(logger):
 
     return test_loader
 
+def filtrate_gtboxes(gt_boxes):
+    """
+    Discard objects which are not in self.classes (or its similar classes)
+    :param obj_list: list
+    :return: list
+    """
+   
+    verified_gt_boxes = []
+    for batch in np.arange(gt_boxes.shape[0]):
+        batch_label = np.empty((0,7))
+        for label in gt_boxes[batch,:,:]:
+            if check_pc_range(label[3:6]) is True:
+                batch_label = np.vstack((batch_label,label))
+                
+        verified_gt_boxes.append(batch_label)
+    verified_gt_boxes = np.array(verified_gt_boxes)
+    print(gt_boxes.shape, verified_gt_boxes.shape)
+    return verified_gt_boxes
+
+
+def check_pc_range(xyz):
+    """
+    :param xyz: [x, y, z]
+    :return:
+    """
+    x_range, y_range, z_range = cfg.PC_AREA_SCOPE
+    if (x_range[0] <= xyz[0] <= x_range[1]) and (y_range[0] <= xyz[1] <= y_range[1]) and \
+            (z_range[0] <= xyz[2] <= z_range[1]):
+        return True
+    return False
 
 if __name__ == "__main__":
     # merge config and log to file
