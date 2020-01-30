@@ -22,6 +22,10 @@ import time
 from tensorboardX import SummaryWriter
 import tqdm
 
+argo_to_kitti = np.array([[6.927964e-03, -9.999722e-01, -2.757829e-03],
+                          [-1.162982e-03, 2.749836e-03, -9.999955e-01],
+                          [9.999753e-01, 6.931141e-03, -1.143899e-03]])
+
 
 np.random.seed(1024)  # set the same seed
 
@@ -41,7 +45,7 @@ parser.add_argument("--extra_tag", type=str, default='default', help="extra tag 
 parser.add_argument('--output_dir', type=str, default=None, help='specify an output directory if needed')
 parser.add_argument("--ckpt_dir", type=str, default=None, help="specify a ckpt directory to be evaluated if needed")
 
-parser.add_argument('--save_result', action='store_true', default=False, help='save evaluation results to files')
+parser.add_argument('--save_result', action='store_true', default=True, help='save evaluation results to files')
 parser.add_argument('--save_rpn_feature', action='store_true', default=False,
                     help='save features for separately rcnn training and evaluation')
 
@@ -87,11 +91,10 @@ def save_kitti_format(sample_id, calib, bbox3d, kitti_output_dir, scores, img_sh
             x, z, ry = bbox3d[k, 0], bbox3d[k, 2], bbox3d[k, 6]
             beta = np.arctan2(z, x)
             alpha = -np.sign(beta) * np.pi / 2 + beta + ry
-
-            print('%s -1 -1 %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f' %
-                  (cfg.CLASSES, alpha, img_boxes[k, 0], img_boxes[k, 1], img_boxes[k, 2], img_boxes[k, 3],
-                   bbox3d[k, 3], bbox3d[k, 4], bbox3d[k, 5], bbox3d[k, 0], bbox3d[k, 1], bbox3d[k, 2],
-                   bbox3d[k, 6], scores[k]), file=f)
+            bbox3d_argo = np.dot(np.linalg.inv(argo_to_kitti),np.array([bbox3d[k, 0], bbox3d[k, 1], bbox3d[k, 2]]).reshape(3,-1))
+            print('%s %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f' %
+                  (cfg.CLASSES, bbox3d[k, 3], bbox3d[k, 4], bbox3d[k, 5], bbox3d_argo[0][0], bbox3d_argo[1][0], bbox3d_argo[2][0],
+                   (np.pi/2. - bbox3d[k, 6]), scores[k]), file=f)
 
 
 def save_rpn_features(seg_result, rpn_scores_raw, pts_features, backbone_xyz, backbone_features, kitti_features_dir,
@@ -217,7 +220,7 @@ def eval_one_epoch_rpn(model, dataloader, epoch_id, result_dir, logger):
                 if not args.test:
                     cur_gt_cls = cur_rpn_cls_label.cpu().numpy()
                     output_data = np.concatenate(
-                        (cur_pts_rect.reshape(-1, 3), cur_gt_cls.reshape(-1, 1), cur_pred_cls.reshape(-1, 1)), axis=1)
+                        (np.dot(np.linalg.inv(argo_to_kitti),cur_pts_rect.reshape(3, -1)).reshape(-1,3), cur_gt_cls.reshape(-1, 1), cur_pred_cls.reshape(-1, 1)), axis=1)
                 else:
                     output_data = np.concatenate((cur_pts_rect.reshape(-1, 3), cur_pred_cls.reshape(-1, 1)), axis=1)
 
@@ -462,12 +465,18 @@ def eval_one_epoch_rcnn(model, dataloader, epoch_id, result_dir, logger):
 
 def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
     np.random.seed(666)
+
+    # Loads the mean size of the CLASS from CFG YAML file
     MEAN_SIZE = torch.from_numpy(cfg.CLS_MEAN_SIZE[0]).cuda()
+
+    # Assign the MODE as TEST unless EVAL specified
     mode = 'TEST' if args.test else 'EVAL'
 
+    # Make output directory result_dir/final_result/data
     final_output_dir = os.path.join(result_dir, 'final_result', 'data')
     os.makedirs(final_output_dir, exist_ok=True)
 
+    # Save data if args.save_result is True or not(default now True)
     if args.save_result:
         roi_output_dir = os.path.join(result_dir, 'roi_result', 'data')
         refine_output_dir = os.path.join(result_dir, 'refine_result', 'data')
@@ -480,6 +489,7 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
     logger.info('==> Output file: %s' % result_dir)
     model.eval()
 
+    # Threshold for IOU
     thresh_list = [0.1, 0.3, 0.5, 0.7, 0.9]
     total_recalled_bbox_list, total_gt_bbox = [0] * 5, 0
     total_roi_recalled_bbox_list = [0] * 5
@@ -487,10 +497,11 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
     cnt = final_total = total_cls_acc = total_cls_acc_refined = total_rpn_iou = 0
 
     progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval')
+
+    # Iterate through data in dataloader
     for data in dataloader:
         cnt += 1
-        sample_id, pts_rect, pts_features, pts_input = \
-            data['sample_id'], data['pts_rect'], data['pts_features'], data['pts_input']
+        sample_id, pts_rect, pts_features, pts_input = data['sample_id'], data['pts_rect'], data['pts_features'], data['pts_input']
         batch_size = len(sample_id)
         inputs = torch.from_numpy(pts_input).cuda(non_blocking=True).float()
         input_data = {'pts_input': inputs}
@@ -522,7 +533,6 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
         # scoring
         if rcnn_cls.shape[2] == 1:
             raw_scores = rcnn_cls  # (B, M, 1)
-
             norm_scores = torch.sigmoid(raw_scores)
             pred_classes = (norm_scores > cfg.RCNN.SCORE_THRESH).long()
         else:
@@ -540,6 +550,7 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
 
             gt_boxes3d = data['gt_boxes3d']
             gt_boxes3d = filtrate_gtboxes(gt_boxes3d)
+            
             for k in range(batch_size):
                 # calculate recall
                 cur_gt_boxes3d = gt_boxes3d[k]
@@ -691,6 +702,8 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
 
 
 def eval_one_epoch(model, dataloader, epoch_id, result_dir, logger):
+    # Returns a dictionary -->
+    # Checks if RPN and RCNN is enabled or not
     if cfg.RPN.ENABLED and not cfg.RCNN.ENABLED:
         ret_dict = eval_one_epoch_rpn(model, dataloader, epoch_id, result_dir, logger)
     elif not cfg.RPN.ENABLED and cfg.RCNN.ENABLED:
@@ -722,6 +735,11 @@ def load_part_ckpt(model, filename, logger, total_keys=-1):
 
 
 def load_ckpt_based_on_args(model, logger):
+    """
+    Input: model and logger instance
+    Output: None
+    Task: Loads ckpt based on the args --rpn_ckpt and  --rcnn_ckpt
+    """
     if args.ckpt is not None:
         train_utils.load_checkpoint(model, filename=args.ckpt, logger=logger)
 
@@ -735,17 +753,22 @@ def load_ckpt_based_on_args(model, logger):
 
 def eval_single_ckpt(root_result_dir):
     root_result_dir = os.path.join(root_result_dir, 'eval')
+    
     # set epoch_id and output dir
     num_list = re.findall(r'\d+', args.ckpt) if args.ckpt is not None else []
     epoch_id = num_list[-1] if num_list.__len__() > 0 else 'no_number'
     root_result_dir = os.path.join(root_result_dir, 'epoch_%s' % epoch_id, cfg.TEST.SPLIT)
+    
+    # Checks if TEST mode in on or not
     if args.test:
         root_result_dir = os.path.join(root_result_dir, 'test_mode')
 
     if args.extra_tag != 'default':
         root_result_dir = os.path.join(root_result_dir, args.extra_tag)
+    # Create root_result_dir if it doesn't exists
     os.makedirs(root_result_dir, exist_ok=True)
 
+    # Log File initialize
     log_file = os.path.join(root_result_dir, 'log_eval_one.txt')
     logger = create_logger(log_file)
     logger.info('**********************Start logging**********************')
@@ -758,12 +781,14 @@ def eval_single_ckpt(root_result_dir):
     model = PointRCNN(num_classes=test_loader.dataset.num_class, use_xyz=True, mode='TEST')
     model.cuda()
 
-    # copy important files to backup
+    # copy important files to backup (Can comment out as takes extra space by backing up files)
+    '''
     backup_dir = os.path.join(root_result_dir, 'backup_files')
     os.makedirs(backup_dir, exist_ok=True)
     os.system('cp *.py %s/' % backup_dir)
     os.system('cp ../lib/net/*.py %s/' % backup_dir)
     os.system('cp ../lib/datasets/kitti_rcnn_dataset.py %s/' % backup_dir)
+    '''
 
     # load checkpoint
     load_ckpt_based_on_args(model, logger)
@@ -851,7 +876,7 @@ def repeat_eval_ckpt(root_result_dir, ckpt_dir):
 def create_dataloader(logger):
     mode = 'TEST' if args.test else 'EVAL'
     #DATA_PATH = os.path.join('..', 'data')
-    DATA_PATH = '/data/Argoverse/argoverse-tracking'
+    DATA_PATH = '/home/kartik17/datasets/argoverse-tracking'
     
     # create dataloader
     test_set = KittiRCNNDataset(root_dir=DATA_PATH, npoints=cfg.RPN.NUM_POINTS, split=cfg.TEST.SPLIT, mode=mode,
@@ -932,6 +957,8 @@ if __name__ == "__main__":
 
     os.makedirs(root_result_dir, exist_ok=True)
 
+    # Check with Args --> eval_all --> 'whether to evaluate all checkpoints'
+    # root_result_dir --> directory where results will be stored --> ../output/rpn/cfg.TAG/
     with torch.no_grad():
         if args.eval_all:
             assert os.path.exists(ckpt_dir), '%s' % ckpt_dir
