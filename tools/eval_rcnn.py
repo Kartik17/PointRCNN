@@ -600,7 +600,10 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
 
             rpn_cls_np = ret_dict['rpn_cls'].cpu().numpy()
             rpn_xyz_np = ret_dict['backbone_xyz'].cpu().numpy()
+            print(ret_dict['backbone_xyz'].cpu().numpy()[0].shape)
+            rpn_xyz_np = np.dot(np.linalg.inv(argo_to_kitti),ret_dict['backbone_xyz'].cpu().numpy()[0].reshape(3, -1)).reshape(1,-1,3)
             seg_result_np = seg_result.cpu().numpy()
+
             output_data = np.concatenate((rpn_xyz_np, rpn_cls_np.reshape(batch_size, -1, 1),
                                           seg_result_np.reshape(batch_size, -1, 1)), axis=2)
 
@@ -612,7 +615,6 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
                                   roi_scores_raw_np[k], image_shape)
                 save_kitti_format(cur_sample_id, calib, pred_boxes3d_np[k], refine_output_dir,
                                   raw_scores_np[k], image_shape)
-
                 output_file = os.path.join(rpn_output_dir, '%06d.npy' % cur_sample_id)
                 np.save(output_file, output_data.astype(np.float32))
 
@@ -645,6 +647,7 @@ def eval_one_epoch_joint(model, dataloader, epoch_id, result_dir, logger):
     progress_bar.close()
     # dump empty files
     '''
+    
     split_file = os.path.join(dataset.imageset_dir, '..', '..', 'ImageSets', dataset.split + '.txt')
     split_file = os.path.abspath(split_file)
     image_idx_list = [x.strip() for x in open(split_file).readlines()]
